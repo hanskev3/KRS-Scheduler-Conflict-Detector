@@ -1,0 +1,434 @@
+#include "mainwindow.h"
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QMessageBox>
+#include <QFileDialog>
+#include <QTextStream>
+#include <QFile>
+#include <utility> // Diperlukan untuk std::as_const
+
+MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
+    setWindowTitle("KRS Scheduler & Conflict Detector");
+    setWindowIcon(QIcon(":/download.png"));
+    resize(1150, 600);
+
+    initDataMaster();
+    setupUI();
+    applyTheme();
+    updateJadwalTable();
+}
+
+MainWindow::~MainWindow() {}
+void MainWindow::initDataMaster() {
+    // Data Mata Kuliah Semester 3 (Sudah diperbaiki: menggunakan angka desimal biasa tanpa awalan 0)
+    masterMatkul = {
+        {"ILK2101", "Desain dan Analisis Algoritma", 3, "Senin", QTime(8, 0), 150, "D-102"},
+        // KKN / Komputasi Numerik ini BENTROK dengan Desain Algoritma (Sama-sama Senin pagi)
+        {"ILK2103", "Komputasi Numerik", 2, "Senin", QTime(9, 0), 100, "D-103"},
+
+        {"ILK2102", "Prak. Desain dan Analisis Algoritma", 1, "Selasa", QTime(10, 0), 50, "Lab Komputer 1"},
+        {"ILK2104", "Basis Data", 3, "Rabu", QTime(8, 0), 150, "D-106"},
+        {"ILK2105", "Prak. Basis Data", 1, "Rabu", QTime(13, 0), 50, "Lab Komputer 2"},
+
+        // Pemrograman Web dan Wirausaha Digital BENTROK (Sama-sama Kamis Siang)
+        {"ILK2106", "Pemrograman Web", 3, "Kamis", QTime(13, 0), 150, "D-101"},
+        {"ILK2108", "Wirausaha Digital", 2, "Kamis", QTime(14, 0), 100, "Online"},
+
+        {"ILK2107", "Prak. Pemrograman Web", 1, "Jumat", QTime(8, 0), 50, "Lab Komputer 1"},
+        {"-", "Internasionalisasi & Kearifan Lokal", 2, "Jumat", QTime(10, 0), 100, "Online"}
+    };
+}
+
+void MainWindow::setupUI() {
+    QWidget *centralWidget = new QWidget(this);
+    centralWidget->setObjectName("centralWidget");   // ← TAMBAHKAN BARIS INI
+    setCentralWidget(centralWidget);
+
+    // Layout Utama (Horizontal membelah Kiri dan Kanan)
+    QHBoxLayout *mainLayout = new QHBoxLayout(centralWidget);
+
+    // --- PANEL KIRI: Daftar Pilihan Matkul ---
+    QVBoxLayout *leftLayout = new QVBoxLayout();
+    QLabel *lblMaster = new QLabel("Daftar Mata Kuliah Tersedia (Smt 3):", this);
+    lblMaster->setObjectName("HeaderLabel");
+
+    listMasterMatkul = new QListWidget(this);
+    for (const auto& matkul : std::as_const(masterMatkul)) {
+        QString waktuStr = matkul.jamMulai.toString("HH:mm") + " - " + matkul.jamSelesai().toString("HH:mm");
+
+        // SOLUSI: Menggunakan multi-arg (memasukkan beberapa string sekaligus di satu fungsi .arg)
+        // Sesuai dengan rekomendasi Clazy untuk performa alokasi memori yang lebih baik
+        QString itemText = QString("[%1] %2 (%3 SKS)\n📅 %4, %5 | 📚 %6")
+                               .arg(matkul.kode, matkul.nama, QString::number(matkul.sks), matkul.hari, waktuStr, matkul.ruang);
+
+        listMasterMatkul->addItem(itemText);
+    }
+
+    btnTambah = new QPushButton(" Tambah ke Jadwal", this);
+    leftLayout->addWidget(lblMaster);
+    leftLayout->addWidget(listMasterMatkul);
+    leftLayout->addWidget(btnTambah);
+
+    // --- PANEL KANAN: Hasil Jadwal & Deteksi Bentrok ---
+    QVBoxLayout *rightLayout = new QVBoxLayout();
+    QLabel *lblJadwal = new QLabel("Jadwal Kuliah Saya:", this);
+    lblJadwal->setObjectName("HeaderLabel");
+
+    tableJadwal = new QTableWidget(this);
+    tableJadwal->setColumnCount(6);
+    tableJadwal->setHorizontalHeaderLabels({"Kode", "Mata Kuliah", "SKS", "Waktu", "Ruang", "Status"});
+    // Ambil kontrol header tabel
+    QHeaderView *header = tableJadwal->horizontalHeader();
+
+    // 1. Atur agar kolom Kode (0), SKS (2), dan Ruang (4) ukurannya pas dengan isi teksnya
+    header->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+
+    // 2. Atur agar kolom Mata Kuliah (1) mengambil sisa ruang paling besar yang tersedia
+    header->setSectionResizeMode(1, QHeaderView::Stretch);
+
+    // 3. Atur agar kolom Waktu (3) dan Status (5) otomatis menyesuaikan panjang teks jadwal
+    header->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    tableJadwal->setSelectionBehavior(QAbstractItemView::SelectRows);
+
+    // === PERBAIKAN TABEL ===
+    tableJadwal->setEditTriggers(QAbstractItemView::NoEditTriggers);     // MATIKAN EDIT
+    tableJadwal->verticalHeader()->setVisible(false);                    // HILANGKAN NOMOR BARIS
+    tableJadwal->setShowGrid(false);                                     // Hilangkan garis grid
+    tableJadwal->setAlternatingRowColors(false);
+
+
+    // Info Panel Bawah
+    QHBoxLayout *infoLayout = new QHBoxLayout();
+    lblTotalSks = new QLabel("Total SKS: 0 / 20", this);
+    lblTotalSks->setObjectName("SksLabel");
+
+    lblStatusBentrok = new QLabel("Status: Aman", this);
+    lblStatusBentrok->setObjectName("StatusAman");
+
+    infoLayout->addWidget(lblTotalSks);
+    infoLayout->addStretch();
+    infoLayout->addWidget(lblStatusBentrok);
+
+    // Tombol Aksi Kanan
+    QHBoxLayout *actionLayout = new QHBoxLayout();
+    btnHapus = new QPushButton(" Hapus Matkul", this);
+    btnHapus->setObjectName("BtnHapus");
+    btnSimpan = new QPushButton(" Simpan CSV", this);
+    btnSimpan->setObjectName("BtnSimpan");
+
+    actionLayout->addWidget(btnHapus);
+    actionLayout->addWidget(btnSimpan);
+
+    rightLayout->addWidget(lblJadwal);
+    rightLayout->addWidget(tableJadwal);
+    rightLayout->addLayout(infoLayout);
+    rightLayout->addLayout(actionLayout);
+
+    // Gabungkan ke layout utama
+    mainLayout->addLayout(leftLayout, 2);
+    mainLayout->addLayout(rightLayout, 3);
+
+    // Connect Signal & Slot
+    connect(btnTambah, &QPushButton::clicked, this, &MainWindow::tambahMatkul);
+    connect(btnHapus, &QPushButton::clicked, this, &MainWindow::hapusMatkul);
+    connect(btnSimpan, &QPushButton::clicked, this, &MainWindow::simpanKeCSV);
+}
+
+void MainWindow::applyTheme() {
+    QString qss = R"(
+        /* ==================== BACKGROUND UTAMA ==================== */
+        QMainWindow > QWidget {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                        stop:0 #461E8A,
+                                        stop:0.5 #240D3D,
+                                        stop:0.8 #1B1280,
+                                        stop:1 #0F172A);
+
+        }
+
+        /* ==================== LABEL HEADER ==================== */
+        QLabel#HeaderLabel {
+            font-size: 16px;
+            font-weight: bold;
+            color: #E0BBFF;
+            padding: 8px 0;
+        }
+
+        /* ==================== TOTAL SKS ==================== */
+        QLabel#SksLabel {
+            font-size: 13.5px;
+            font-weight: bold;
+            color: #FFFFFF;
+            background: qlineargradient(x1:0, y1:1, x2:0, y2:0,
+                                      stop:0 #C026D3, stop:1 #7E22CE);
+            padding: 10px 22px;
+            border-radius: 16px;
+            border: 1px solid rgba(192, 38, 211, 0.4);
+        }
+
+        /* ==================== STATUS LABEL ==================== */
+        QLabel#StatusAman {
+            font-size: 13.5px;
+            font-weight: bold;
+            color: #67E8A5;
+            background-color: rgba(16, 185, 129, 0.25);
+            border: 1px solid #4ADE80;
+            padding: 10px 22px;
+            border-radius: 16px;
+        }
+        QLabel#StatusBentrok {
+            font-size: 13.5px;
+            font-weight: bold;
+            color: #FF8A8A;
+            background-color: rgba(185, 28, 28, 0.3);
+            border: 1px solid #F87171;
+            padding: 10px 22px;
+            border-radius: 16px;
+        }
+
+        /* ==================== LIST & TABLE ==================== */
+        QListWidget, QTableWidget {
+            background-color: rgba(26, 16, 55, 0.95);
+            border: 1px solid rgba(167, 139, 250, 0.35);
+            border-radius: 18px;
+            padding: 8px;
+            color: #F3E8FF;
+            outline: none;
+
+            font-size: 12.8px;
+            font-family: "Helvetica Neue";
+        }
+
+        /* Hilangkan garis hitam focus & improve selection */
+        QTableWidget::item:focus {
+            outline: none;
+            border: none;
+        }
+        QTableWidget::item:selected {
+            background-color: rgba(167, 139, 250, 0.28);
+            color: #FFFFFF;
+            border: none;
+        }
+        QTableWidget::item:selected:focus {
+            outline: none;
+            border: none;
+        }
+
+        /* List Item Kiri */
+        QListWidget::item {
+            background-color: rgba(45, 25, 85, 0.75);
+            margin: 6px 4px;
+            padding: 14px;
+            border-radius: 12px;
+            border: 1px solid rgba(139, 92, 246, 0.4);
+        }
+        QListWidget::item:hover {
+            background-color: rgba(167, 139, 250, 0.3);
+            border: 1px solid #C4B5FD;
+            color: #E0BBFF;
+        }
+        QListWidget::item:selected {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                      stop:0 #C026D3, stop:1 #7E22CE);
+            color: #FFFFFF;
+            font-weight: bold;
+        }
+
+        /* Table Styling */
+        QTableWidget::item {
+            padding: 12px 10px;
+            border-bottom: 1px solid rgba(139, 92, 246, 0.2);
+        }
+
+        QHeaderView::section {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                      stop:0 #4C1D95, stop:1 #2A0A5E);
+            color: #E0BBFF;
+            font-weight: bold;
+            padding: 14px;
+            border: none;
+            border-bottom: 2px solid #C026D3;
+        }
+
+        /* ==================== BUTTONS ==================== */
+        QPushButton {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                      stop:0 #C026D3, stop:1 #7E22CE);
+            color: #FFFFFF;
+            border: none;
+            border-radius: 14px;
+            padding: 11px 24px;
+            font-weight: bold;
+            font-size: 13px;
+        }
+        QPushButton:hover {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                      stop:0 #D946EF, stop:1 #A855F7);
+        }
+        QPushButton:pressed {
+            background: #581C87;
+        }
+
+        /* Tombol Hapus */
+        QPushButton#BtnHapus {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                      stop:0 #F87171, stop:1 #E11D48);
+        }
+        QPushButton#BtnHapus:hover {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                      stop:0 #FB7185, stop:1 #F43F5E);
+        }
+
+        /* Tombol Simpan CSV */
+        QPushButton#BtnSimpan {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                      stop:0 #A78BFA, stop:1 #7C3AED);
+        }
+        QPushButton#BtnSimpan:hover {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                      stop:0 #C4B5FD, stop:1 #8B5CF6);
+        }
+    )";
+
+    this->setStyleSheet(qss);
+}
+
+bool MainWindow::cekBentrok(const MataKuliah& m1, const MataKuliah& m2) {
+    if (m1.hari != m2.hari) return false;
+    // Bentrok jika jam mulai m1 berada di antara jam m2, atau sebaliknya
+    return (m1.jamMulai < m2.jamSelesai() && m1.jamSelesai() > m2.jamMulai);
+}
+
+void MainWindow::tambahMatkul() {
+    int r = listMasterMatkul->currentRow();
+    if (r < 0) return;
+
+    MataKuliah dipilih = masterMatkul[r];
+
+    // Cek apakah sudah pernah ditambah sebelumnya
+    // Cari bagian ini di fungsi tambahMatkul(), lalu tambahkan std::as_const
+    for (const auto& m : std::as_const(terpilihMatkul)) {
+        if (m.kode == dipilih.kode && m.nama == dipilih.nama) {
+            QMessageBox::warning(this, "Peringatan", "Mata kuliah ini sudah diambil!");
+            return;
+        }
+    }
+
+    terpilihMatkul.append(dipilih);
+    updateJadwalTable();
+}
+
+void MainWindow::hapusMatkul() {
+    int r = tableJadwal->currentRow();
+    if (r < 0) {
+        QMessageBox::warning(this, "Peringatan", "Pilih baris mata kuliah di tabel yang ingin dihapus!");
+        return;
+    }
+    terpilihMatkul.removeAt(r);
+    updateJadwalTable();
+}
+
+void MainWindow::updateJadwalTable() {
+    tableJadwal->setRowCount(0);
+    int totalSks = 0;
+    bool adaBentrokGlobal = false;
+
+    // Array penampung status bentrok per baris terindeks
+    QVector<bool>isBentrokRow(terpilihMatkul.size(), false);
+
+    // Algoritma Deteksi Bentrok (Komparasi Berpasangan)
+    for (int i = 0; i < terpilihMatkul.size(); ++i) {
+        for (int j = i + 1; j < terpilihMatkul.size(); ++j) {
+            if (cekBentrok(terpilihMatkul[i], terpilihMatkul[j])) {
+                isBentrokRow[i] = true;
+                isBentrokRow[j] = true;
+                adaBentrokGlobal = true;
+            }
+        }
+    }
+
+    // ... [Kode bagian atas updateJadwalTable tetap sama] ...
+
+    // Render ke Tabel UI
+    for (int i = 0; i < terpilihMatkul.size(); ++i) {
+        const auto& m = terpilihMatkul[i];
+        int row = tableJadwal->rowCount();
+        tableJadwal->insertRow(row);
+
+        tableJadwal->setItem(row, 0, new QTableWidgetItem(m.kode));
+        tableJadwal->setItem(row, 1, new QTableWidgetItem(m.nama));
+        tableJadwal->setItem(row, 2, new QTableWidgetItem(QString::number(m.sks)));
+
+        QString waktuStr = QString("%1, %2-%3").arg(m.hari, m.jamMulai.toString("HH:mm"), m.jamSelesai().toString("HH:mm"));
+        tableJadwal->setItem(row, 3, new QTableWidgetItem(waktuStr));
+        tableJadwal->setItem(row, 4, new QTableWidgetItem(m.ruang));
+
+        QTableWidgetItem *statusItem = new QTableWidgetItem();
+        tableJadwal->setItem(row, 5, statusItem);
+
+        if (isBentrokRow[i]) {
+            statusItem->setText("⚠️ BENTROK");
+
+            for(int col = 0; col < 6; ++col) {
+                if(tableJadwal->item(row, col)) {
+                    // Warna gelap kemerahan untuk background baris yang bentrok
+                    tableJadwal->item(row, col)->setBackground(QColor(69, 26, 26));
+                    // Warna teks pink/merah muda terang agar kontras dan terbaca
+                    tableJadwal->item(row, col)->setForeground(QColor(254, 202, 202));
+                }
+            }
+        } else {
+            statusItem->setText("☑️ OK");
+
+            for(int col = 0; col < 6; ++col) {
+                if(tableJadwal->item(row, col)) {
+                    // Kembalikan warna teks ke putih/abu terang jika jadwal aman
+                    tableJadwal->item(row, col)->setForeground(QColor(241, 245, 249));
+                }
+            }
+        }
+
+        totalSks += m.sks;
+    }
+
+
+    // Update Banner Status Total SKS & Bentrok Global
+    lblTotalSks->setText(QString("Total SKS: %1 / 20").arg(totalSks));
+    if (adaBentrokGlobal) {
+        lblStatusBentrok->setText("⚠️ Ada Jadwal Bentrok!");
+        lblStatusBentrok->setObjectName("StatusBentrok");
+    } else {
+        lblStatusBentrok->setText("☑️ Jadwal Aman");
+        lblStatusBentrok->setObjectName("StatusAman");
+    }
+
+    lblStatusBentrok->style()->unpolish(lblStatusBentrok);
+    lblStatusBentrok->style()->polish(lblStatusBentrok);
+}
+
+void MainWindow::simpanKeCSV() {
+    if (terpilihMatkul.isEmpty()) {
+        QMessageBox::warning(this, "Ekspor Gagal", "Tidak ada jadwal untuk disimpan.");
+        return;
+    }
+
+    QString fileName = QFileDialog::getSaveFileName(this, "Simpan Jadwal", "", "CSV Files (*.csv)");
+    if (fileName.isEmpty()) return;
+
+    QFile file(fileName);
+    if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QTextStream out(&file);
+        out << "Kode,Mata Kuliah,SKS,Hari,Jam Mulai,Jam Selesai,Ruang\n";
+        // Menggunakan std::as_const
+        for (const auto& m : std::as_const(terpilihMatkul)) {
+            out << m.kode << "," << m.nama << "," << m.sks << "," << m.hari << ","
+                << m.jamMulai.toString("HH:mm") << "," << m.jamSelesai().toString("HH:mm") << "," << m.ruang << "\n";
+        }
+        file.close();
+        QMessageBox::information(this, "Sukses", "Jadwal berhasil disimpan ke CSV!");
+    }
+}

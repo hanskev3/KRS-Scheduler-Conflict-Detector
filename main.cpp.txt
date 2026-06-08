@@ -1,0 +1,14 @@
+#include "mainwindow.h"
+#include <QApplication>
+
+int main(int argc, char *argv[]) {
+    QApplication a(argc, argv);
+
+    // Set font global yang bersih dan modern
+    QFont defaultFont("Segoe UI", 10);
+    QApplication::setFont(defaultFont);
+
+    MainWindow w;
+    w.show();
+    return a.exec();
+}

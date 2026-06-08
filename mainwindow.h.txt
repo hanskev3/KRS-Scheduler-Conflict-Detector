@@ -1,0 +1,61 @@
+#ifndef MAINWINDOW_H
+#define MAINWINDOW_H
+
+#include <QMainWindow>
+#include <QTableWidget>
+#include <QListWidget>
+#include <QPushButton>
+#include <QLabel>
+#include <QVector>
+#include <QTime>
+
+// Struktur Data Mata Kuliah
+struct MataKuliah {
+    QString kode;
+    QString nama;
+    int sks;
+    QString hari;
+    QTime jamMulai;
+    int durasiMenit; // dalam menit
+    QString ruang;
+
+    // Menghitung jam selesai
+    QTime jamSelesai() const {
+        return jamMulai.addSecs(durasiMenit * 60);
+    }
+};
+
+class MainWindow : public QMainWindow {
+    Q_OBJECT
+
+public:
+    MainWindow(QWidget *parent = nullptr);
+    ~MainWindow();
+
+private slots:
+    void tambahMatkul();
+    void hapusMatkul();
+    void simpanKeCSV();
+
+private:
+    void initDataMaster();
+    void setupUI();
+    void applyTheme();
+    void updateJadwalTable();
+    bool cekBentrok(const MataKuliah& m1, const MataKuliah& m2);
+
+    // Komponen UI
+    QListWidget *listMasterMatkul;
+    QTableWidget *tableJadwal;
+    QPushButton *btnTambah;
+    QPushButton *btnHapus;
+    QPushButton *btnSimpan;
+    QLabel *lblTotalSks;
+    QLabel *lblStatusBentrok;
+
+    // Data Storage
+    QVector<MataKuliah> masterMatkul;
+    QVector<MataKuliah> terpilihMatkul;
+};
+
+#endif // MAINWINDOW_H
